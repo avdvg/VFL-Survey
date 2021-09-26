@@ -172,7 +172,7 @@ Pysyft是由OpenMined社区开发的基于安全和隐私的深度学习开源�
 ## TF Encrypted
 
 TF-Encrypted(TFE)是用于安全多方计算 (MPC) 机器学习的开源框架。它建立在TensorFlow之上，利用了Keras API的易用性，同时通过安全的多方计算和同态加密对加密数据进行训练和预测。TF Encrypted的目的是让用户在并不精通密码学、分布式系统或高性能计算专业知识的情况下，也可以使用隐私保护加持的机器学习随时可用。用TF Encrypted的安全协议来安全汇总更新内容。当前实现使用了TF Encrypted和额外的密匙共享方法，需要三方（至更多方）实现安全地聚合计算。在安全计算中，其通过在图形模式下运行，并运用分发引擎按恰当顺序执行操作，实现同步功能。  [[Web]](https://github.com/tf-encrypted/tf-encrypted)
-## Crypten
+## CrypTen
 
 CrypTen是一个基于PyTorch的隐私保护机器学习框架。它目前将Secure Multiparty Computation作为其安全计算后端来实现。该框架通过CrypTensor外观与感觉完全像PyTorch的对象来呈现协议Tensor。这使用户可以使用类似于PyTorch中的自动区分和神经网络模块。CrypTen基于库。就像PyTorch一样，它实现了张量库。这使从业人员更容易调试。CrypTen 目前在Linux 和Mac上使用 Python 3.7运行。不支持Windows。目前尚不支持在GPU 上进行计算。  [[Web]](https://github.com/facebookresearch/CrypTen)
 ## iBond
