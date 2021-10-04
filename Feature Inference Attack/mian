@@ -1,0 +1,425 @@
+#%%
+import pandas as pd
+import numpy as np
+import os
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+import torch
+import random
+random.seed(10)
+from sklearn.metrics import roc_auc_score
+from torch.utils.data import DataLoader
+from defense_model import Adv_training
+
+# Set parameters for Laplace function implementation
+
+train_data = pd.read_csv("../datasets/adult_train.csv")
+test_data = pd.read_csv("../datasets/adult_test.csv")
+# 将训练集和测试集的数据合并 一起做数据预处理
+all_data = pd.concat((train_data, test_data), axis=0)
+# 填充空值，下一语句用于检测出来哪一列存在空值
+all_data.isnull().any()
+# Workclass Occupation Country中存在空值
+all_data["Workclass"] = all_data["Workclass"].fillna("Private")
+all_data["Occupation"] = all_data["Occupation"].fillna("Prof-specialty")
+# all_data["Country"] = all_data["Country"].fillna("United-States")
+all_data = all_data.drop('fnlwgt', axis=1, inplace=False)
+# Education与Education_num是一个一一对应的关系 所以只需要保留一个属性就可以了
+all_data = all_data.drop('Education', axis=1, inplace=False)
+
+# 进行特征因子化
+# 首先对Sex进行one-hot编码
+dummies_Sex = pd.get_dummies(all_data['Sex'], prefix='Sex')
+# 对Workclass进行one-hot编码
+dummies_Workclass = pd.get_dummies(all_data['Workclass'], prefix='Wc')
+# 对Martial_Status进行one-hot编码
+dummies_Mar_Sta = pd.get_dummies(all_data['Martial_Status'], prefix='MS')
+# 对Occupation进行one-hot编码
+dummies_Occ = pd.get_dummies(all_data['Occupation'], prefix='Occ')
+# 对Relationship进行one-hot编码
+dummies_Rel = pd.get_dummies(all_data['Relationship'], prefix='Rel')
+# 对Race进行one-hot编码
+dummies_Race = pd.get_dummies(all_data['Race'], prefix='Race')
+# 对Country进行one-hot编码
+# dummies_Country = pd.get_dummies(all_data['Country'],prefix='Cou')
+all_data = pd.concat(
+    [all_data, dummies_Sex, dummies_Workclass, dummies_Mar_Sta, dummies_Occ, dummies_Rel, dummies_Race], axis=1)
+#
+# all_data = pd.concat([all_data,dummies_Sex],axis=1)
+all_data_df = all_data.drop(['Sex', 'Workclass', 'Martial_Status', 'Occupation', 'Relationship', 'Race', 'Country'],
+                            axis=1, inplace=False)
+y_target = all_data_df.pop("Target")
+
+
+# 将数据集分回训练集和测试集
+dummy_train_data_df = all_data_df[0:32561]
+dummy_test_data_df = all_data_df[32561:len(all_data_df)]
+dummy_train_data_target = y_target[0:32561]
+dummy_test_data_target = y_target[32561:len(all_data_df)]
+
+# 对Capital_Gain和Capital_Loss两个属性的值进行标准化
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+dummy_train_data_df['Capital_Gain'] = scaler.fit(dummy_train_data_df['Capital_Gain'].values.reshape(-1, 1)).transform(
+    dummy_train_data_df['Capital_Gain'].values.reshape(-1, 1))
+dummy_train_data_df['Capital_Loss'] = scaler.fit(dummy_train_data_df['Capital_Loss'].values.reshape(-1, 1)).transform(
+    dummy_train_data_df['Capital_Loss'].values.reshape(-1, 1))
+dummy_train_data_df['Age'] = scaler.fit(dummy_train_data_df['Age'].values.reshape(-1, 1)).transform(
+    dummy_train_data_df['Age'].values.reshape(-1, 1))
+dummy_train_data_df['Education_Num'] = scaler.fit(dummy_train_data_df['Education_Num'].values.reshape(-1, 1)).transform(
+    dummy_train_data_df['Education_Num'].values.reshape(-1, 1))
+dummy_train_data_df['Hours_per_week'] = scaler.fit(
+    dummy_train_data_df['Hours_per_week'].values.reshape(-1, 1)).transform(
+    dummy_train_data_df['Hours_per_week'].values.reshape(-1, 1))
+dummy_test_data_df['Capital_Gain'] = scaler.fit(dummy_test_data_df['Capital_Gain'].values.reshape(-1, 1)).transform(
+    dummy_test_data_df['Capital_Gain'].values.reshape(-1, 1))
+dummy_test_data_df['Capital_Loss'] = scaler.fit(dummy_test_data_df['Capital_Loss'].values.reshape(-1, 1)).transform(
+    dummy_test_data_df['Capital_Loss'].values.reshape(-1, 1))
+dummy_test_data_df['Age'] = scaler.fit(dummy_test_data_df['Age'].values.reshape(-1, 1)).transform(
+    dummy_test_data_df['Age'].values.reshape(-1, 1))
+dummy_test_data_df['Education_Num'] = scaler.fit(dummy_test_data_df['Education_Num'].values.reshape(-1, 1)).transform(
+    dummy_test_data_df['Education_Num'].values.reshape(-1, 1))
+dummy_test_data_df['Hours_per_week'] = scaler.fit(dummy_test_data_df['Hours_per_week'].values.reshape(-1, 1)).transform(
+    dummy_test_data_df['Hours_per_week'].values.reshape(-1, 1))
+
+
+# 数据集分成两个party
+train_privacy_property = dummy_train_data_df.iloc[:, 36:37] #44,45
+test_privacy_property = dummy_test_data_df.iloc[:, 36:37]
+# print(train_privacy_property.min(), train_privacy_property.max())
+
+dummy_train_data_df = dummy_train_data_df.drop(['Sex_ Male'],axis=1)
+dummy_test_data_df = dummy_test_data_df.drop(['Sex_ Male'],axis=1)
+dummy_train_data_df = dummy_train_data_df.drop(['Sex_ Female'],axis=1)
+dummy_test_data_df = dummy_test_data_df.drop(['Sex_ Female'],axis=1)
+
+
+train_df1 = dummy_train_data_df.iloc[:, 0:23]
+train_df2 = dummy_train_data_df.iloc[:, 23:]
+
+test_df1 = dummy_test_data_df.iloc[:, 0:23]
+test_df2 = dummy_test_data_df.iloc[:, 23:]
+
+train_df = train_df2.values
+train_utility_label = dummy_train_data_target.values
+test_df = test_df2.values
+test_utility_label = dummy_test_data_target.values
+
+X_train1 = np.array(train_df1)
+X_train1 = X_train1.astype(np.float64)
+X_train1 = torch.tensor(X_train1).float().cuda()
+#是否注入噪声
+# X_train1 = X_train1+5*torch.randn(X_train1.shape).cuda()
+
+
+
+X_train2 = np.array(train_df2)
+X_train2 = X_train2.astype(np.float64)
+X_train2 = torch.tensor(X_train2).float().cuda()
+#是否注入噪声
+# X_train2 = X_train2+5*torch.randn(X_train2.shape).cuda()
+
+
+train_utility_label = np.array(train_utility_label)
+train_utility_label = train_utility_label.astype(np.float64)
+train_utility_label = torch.tensor(train_utility_label).long().cuda()
+
+train_privacy_property = np.array(train_privacy_property)
+train_privacy_property = train_privacy_property.astype(np.float64)
+train_privacy_property = torch.tensor(train_privacy_property).squeeze().long().cuda()
+test_privacy_property = np.array(test_privacy_property)
+test_privacy_property = test_privacy_property.astype(np.float64)
+test_privacy_property = torch.tensor(test_privacy_property).squeeze().long().cuda()
+
+
+X_test1 = np.array(test_df1)
+X_test1 = X_test1.astype(np.float64)
+X_test1 = torch.tensor(X_test1).float().cuda()
+X_test2 = np.array(test_df2)
+X_test2 = X_test2.astype(np.float64)
+X_test2 = torch.tensor(X_test2).float().cuda()
+
+test_utility_label = np.array(test_utility_label)
+test_utility_label = test_utility_label.astype(np.float64)
+test_utility_label = torch.tensor(test_utility_label).long().cuda()
+
+X_train1_loader = DataLoader(dataset=X_train1, batch_size=200000, shuffle=False)
+X_train2_loader = DataLoader(dataset=X_train2, batch_size=200000, shuffle=False)
+
+X_test1_loader = DataLoader(dataset=X_test1, batch_size=200000, shuffle=False)
+X_test2_loader = DataLoader(dataset=X_test2, batch_size=200000, shuffle=False)
+
+y_train_loader = DataLoader(dataset=train_utility_label, batch_size=200000, shuffle=False)
+y_test_loader = DataLoader(dataset=test_utility_label, batch_size=200000, shuffle=False)
+
+
+right = np.sum(np.array(train_privacy_property.cpu() == train_utility_label.cpu()) + 0)
+print('infer acc', right/train_privacy_property.shape[0])
+
+# 构建VFL模型
+import torch.nn as nn
+import torch.optim as optim
+
+
+class SplitNN(nn.Module):
+    def __init__(self, models, optimizers, partition):
+        super().__init__()
+        self.models = models
+        self.optimizers = optimizers
+        self.output = [None] * (partition)
+
+    #         self.output.to(device)
+
+    def zero_grads(self):
+        for opt in self.optimizers:
+            opt.zero_grad()
+
+    # Here x is a list having a batch of diffent partitioned datasets.
+    def forward(self, x, stage):
+        for i in range(len(x)):
+            if i == 1: # 参与方1进行隐私过滤
+
+                torch.save(self.models[i], 'adults_model_{}.pkl'.format(i))
+                if stage == 'train':
+                    labell=train_privacy_property
+                    labelll = train_utility_label
+                else:
+                    labell=test_privacy_property
+                    labelll = test_utility_label
+                Adv_training(x[i], labell, i, labelll)
+
+                self.models[i] = torch.load('adults_model_{}.pkl'.format(i))
+            self.output[i] = self.models[i](x[i])
+
+
+        # Concatenating the output of various structures in bottom part (alice's location)
+        total_out = torch.cat(tuple(self.output[i] for i in range(len(self.output))), dim=1)
+        second_layer_inp = total_out.detach().requires_grad_()
+
+        self.second_layer_inp = second_layer_inp
+        pred = self.models[-1](second_layer_inp)
+        return pred, self.output[1]#total_out
+
+    def backward(self):
+
+        second_layer_inp = self.second_layer_inp
+        grad = second_layer_inp.grad
+
+        i = 0
+        while i < partition - 1:
+            #             print('hb',grad[:, hidden_sizes[1]*i : hidden_sizes[1]*(i+1)].shape)
+            self.output[i].backward(grad[:, hidden_sizes[1] * i: hidden_sizes[1] * (i + 1)])
+            i += 1
+
+        # This is implemented because it is not necessary that last batch is of exact same size as partitioned.
+        self.output[i].backward(grad[:, hidden_sizes[1] * i:])
+
+    def step(self):
+        for opt in self.optimizers:
+            opt.step()
+
+
+
+def create_models(partition, input_size, hidden_sizes, output_size):
+    models = list()
+    for _ in range(1, partition):
+        models.append(nn.Sequential(nn.Linear(int(23), hidden_sizes[1]),
+                                    nn.ReLU(),
+                                    # nn.Dropout(0.8)
+                                    ).cuda())
+    rem = input_size - int(input_size / partition * (partition - 1))
+    models.append(nn.Sequential(nn.Linear(22, hidden_sizes[1]),
+                                nn.ReLU(),
+                                # nn.Dropout(0.8),
+                                ).cuda())
+
+    models.append(nn.Sequential(nn.Linear(hidden_sizes[1] * partition, hidden_sizes[2]),
+                                nn.ReLU(),
+                                nn.Dropout(0.5),
+                                nn.Linear(hidden_sizes[2], output_size),
+                                nn.LogSoftmax(dim=1)
+                                ).cuda())
+    return models
+
+
+input_size = 7
+hidden_sizes = [64, 128, 64]
+output_size = 2
+
+partition = 2
+models = create_models(partition, input_size, hidden_sizes, output_size)
+
+optimizers = [optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.999), eps=1e-08, weight_decay=0) for model in models]
+
+# optimizers = [optim.SGD(models[0].parameters(), lr=0.1, momentum=0.9), optim.SGD(models[1].parameters(), lr=0.1, momentum=0.9), optim.SGD(models[-1].parameters(), lr=0.01, momentum=0.9)]
+# optimizers = [optim.SGD(model.parameters(), lr=0.1, momentum=0.9) for model in models]
+
+splitNN = SplitNN(models, optimizers, partition)
+
+
+
+def train(epoch, x, target, splitnn):
+    splitnn.zero_grads()
+    pred, total_ = splitnn.forward(x, 'train')
+    if epoch == 39:
+    # if epoch%10==0:
+        torch.save(total_, 'adults_embedding_train.pth')
+    criterion = nn.CrossEntropyLoss()
+    loss = criterion(pred, target)
+
+    loss.backward()
+    splitnn.backward()
+    model0_grad_norm = []
+    model1_grad_norm = []
+    for name, parms in models[0].named_parameters():
+
+        # print('-->name:', name, '-->grad_requirs:', parms.requires_grad, ' -->grad_value:', torch.norm(parms.grad))
+        model0_grad_norm.append(torch.norm(parms.grad))
+
+    for name, parms in models[0].named_parameters():
+        # print('-->name:', name, '-->grad_requirs:', parms.requires_grad, ' -->grad_value:', torch.norm(parms.grad))
+        model1_grad_norm.append(torch.norm(parms.grad))
+    # torch.save(model0_grad_norm, 'model0_grad_norm.pth')
+    # torch.save(model1_grad_norm, 'model1_grad_norm.pth')
+
+
+
+    splitnn.step()
+    return loss
+
+
+def test_cda(epoch, x, target, splitnn):
+    splitnn.eval()
+    pred, total_ = splitnn.forward(x, 'test')
+    if epoch == 39:
+    # if epoch % 10 == 0:
+        torch.save(total_, 'adults_embedding_test.pth')
+    return pred
+
+
+def adversary():
+#%%
+    # 攻击者的背景知识：考虑训练集中训练攻击模型，在测试集中测试攻击模型
+    adv_train = torch.load('adults_embedding_train.pth').cuda()
+    adv_test = torch.load('adults_embedding_test.pth').cuda()
+
+#%%
+
+    from model.attack_model import Adv_class
+    from model.attack_model import adversary_class_train
+    from model.attack_model import adversary_class_test
+
+    AttackModel = Adv_class(latent_dim=128, target_dim=2).cuda()
+
+    # 训练攻击者模型
+    # optim_ = optim.SGD(AttackModel.parameters(), lr=0.1, momentum=0.9)
+    optim_ = optim.Adam(AttackModel.parameters(), lr=0.01, weight_decay=1e-8)
+    # optim_ = optim.SGD(AttackModel.parameters(), lr=0.001, momentum=0.5)
+
+    acc_ = []
+    auc_ = []
+    f1_ = []
+    for i in range(50):
+
+        loss = adversary_class_train(optim_, AttackModel, adv_train, train_privacy_property)
+        # print('the attack train epoch {} and loss is {}'.format(i, loss))
+        acc, auc, f1 = adversary_class_test(optim_, AttackModel, adv_test, test_privacy_property)
+        # print('the attack test epoch {} and acc is {}, auc is {}, f1 is {}.'.format(i, acc, auc, f1))
+        acc_.append(acc)
+        auc_.append(auc)
+        f1_.append(f1)
+    acc_,_ = torch.tensor(acc_).topk(6)
+    max_acc = torch.mean(acc_.float())
+
+    auc_,_ = torch.tensor(auc_).topk(6)
+    max_auc = torch.mean(auc_.float())
+
+    f1_, _ = torch.tensor(f1_).topk(6)
+    max_f1 = torch.mean(f1_.float())
+
+    return max_acc, max_auc, max_f1
+
+epochs = 50
+loss_list = list()
+cda_list = list()
+
+
+for epoch in range(epochs):
+
+    total_loss = 0
+    print('starting!')
+
+    for x1, x2, y in zip(X_train1_loader, X_train2_loader, y_train_loader):
+        loss = train(epoch, [x1, x2], y, splitNN)
+        total_loss += loss.item()
+    loss_list.append(total_loss / train_utility_label.shape[0])
+    print(f"Epoch: {epoch + 1}... Training Loss: {total_loss / train_utility_label.shape[0]}")
+
+    # 测试
+    right = 0
+
+    for x1, x2, y in zip(X_test1_loader, X_test2_loader, y_test_loader):
+        pred = test_cda(epoch, [x1, x2], y, splitNN)
+        pred = np.argmax(pred.detach().cpu(), axis=1)
+        right += np.sum(np.array(pred == y.cpu()) + 0)
+
+    # if epoch%10==0:
+    #     max_acc, max_auc, max_f1 = adversary()
+    #     print('最大的隐私泄露，acc {}, auc{}, f1{}'.format(max_acc, max_auc, max_f1))
+    #     print()
+
+    cda_list.append(100 * right / test_utility_label.shape[0])
+    print('the clean pic cda is {}'.format(100 * right / test_utility_label.shape[0]))
+print('the max cda in the exp is', max(cda_list))
+
+# 保存loss,以及训练的acc
+# np.save('../tmp/adults_adv_loss3', loss_list)
+# np.save('../tmp/adults_adv_acc3', cda_list)
+# print('saving')
+
+
+#
+# # 绘制训练的精度
+# # plt.figure(figsize=(num_group, 6))
+pright_list = loss_list
+X = [i for i in range(len(loss_list))]
+from matplotlib.ticker import MultipleLocator, FormatStrFormatter
+from pylab import *
+
+xmajorLocator = MultipleLocator(10)  # 将x主刻度标签设置为20的倍数
+ax = subplot(111)  # 注意:一般都在ax中设置,不再plot中设置
+# 设置主刻度标签的位置,标签文本的格式
+ax.xaxis.set_major_locator(xmajorLocator)
+
+# plt.plot(X, right_list, marker='o', lw=4,c='red', ms=10,label='ASR') #折线图
+plt.plot(X, pright_list, marker='o', lw=4, c='black', ms=10, label='loss')
+# 设置坐标轴名称
+
+font2 = {'family': 'Times New Roman',
+         'weight': 'normal',
+         'size': 17,
+         }
+
+plt.ylabel('VALUE', font2)
+plt.xlabel('ROUND', font2)
+
+plt.xticks(size=20)
+plt.yticks(size=20)
+
+font1 = {'family': 'Times New Roman',
+         'weight': 'normal',
+         'size': 17,
+         }
+# plt.plot(X, cda_list, marker='o', lw=6,c='red', ms=15,label='CDA')
+
+# for a, b in zip(X, right_list):
+#     plt.text(a, b, '%.2f' % b, ha='center', va='bottom', fontsize=17)#每个点的数值
+plt.legend(prop=font1)  # 显示每根折线的label
+plt.show()
+
+
+# # 泄露测试
+max_acc, max_auc, max_f1= adversary()
+print('最大的隐私泄露，acc {}, auc{}, f1{}'.format(max_acc, max_auc, max_f1))
+
+
